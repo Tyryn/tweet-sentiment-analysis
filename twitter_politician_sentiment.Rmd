@@ -1,0 +1,310 @@
+---
+title: "Twitter Sentiment towards three South African politicians"
+author: "Tyryn"
+date: "13/03/2022"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set
+library(tidyverse)
+library(rtweet)
+library(ggplot2)
+library(tidytext)
+library(gridExtra)
+library(wordcloud)
+library(tm)
+library(webshot)
+library(syuzhet)
+
+clean.text = function(x) {
+  # convert to lower case
+  x = tolower(x)
+  # remove rt
+  x = gsub("rt", "", x)
+  # remove at
+  x = gsub("@\\w+", "", x)
+  # remove punctuation
+  x = gsub("[[:punct:]]", "", x)
+  # remove numbers
+  x = gsub("[[:digit:]]", "", x)
+  # remove links http
+  x = gsub("http\\w+", "", x)
+  # remove tabs
+  x = gsub("[ |\t]{2,}", "", x)
+  # remove blank spaces at the beginning
+  x = gsub("^ ", "", x)
+  # remove blank spaces at the end
+  x = gsub(" $", "", x)
+  # some other cleaning text
+  x = gsub('https://','',x)
+  x = gsub('http://','',x)
+  x = gsub('[^[:graph:]]', ' ',x)
+  x = gsub('[[:punct:]]', '', x)
+  x = gsub('[[:cntrl:]]', '', x)
+  x = gsub('\\d+', '', x)
+  x = str_replace_all(x,"[^[:graph:]]", " ")
+  return(x)
+}
+
+# Politicians list
+politicians <- c("Zille", "Ramaphosa", "Malema")
+
+# Load the data
+tweet_list_preprocess<-readRDS("tweet_list_preprocess.RData")
+tweet_list_time <- readRDS("tweet_list_time.RData")
+
+# Name the list elements
+names(tweet_list_preprocess) <- politicians
+
+# Number of tweets per hour ####
+tweet_list_time <- lapply(tweet_list_preprocess, function(x){
+  df <- x %>%
+    mutate(Created_at_round = round.POSIXt(created_at, units = "hours"))
+  return(df)
+})
+
+tweet_df <- Map(cbind, tweet_list_time, Politician = names(tweet_list_time)) %>% 
+  bind_rows(.) 
+
+# Mentions per hour
+tweet_df_hour <- tweet_df %>% 
+  group_by(Politician) %>% 
+  dplyr::count(Created_at_round)
+
+tweets_per_hour <- lapply(politicians, function(x){
+  df <- tweet_df_hour %>% 
+  filter(Politician==x) %>% 
+  mutate(total_hours = nrow(.)) %>% 
+  mutate(total_tweets = sum(n)) %>% 
+  mutate(mean_tweets = round(total_tweets/total_hours)) %>% 
+  slice(1) %>% 
+  select(mean_tweets)
+  return(df[1,2])
+})
+
+
+
+```
+
+In this short report I explore Twitter sentiment towards three prominent South African politicians: Cyril Ramaphosa, Julius Malema, and Helen Zille. Cyril Ramaphosa is the current President of South Africa and the African National Congress (ANC), a political party that has been in power since 1994. Julius Malema is the leader of the Economic Freedom Fighters (EFF), a political party formed in 2013 that has quickly grown to be the country's third largest. Helen Zille was the leader of the second largest party, the Democratic Alliance (DA), until 2015 but has since remained as the DA's arguably most outspoken member. 
+
+Opinion is strongly divided on all three politicians. Ramaphosa leads a party that has failed to deliver on many of its promises and has endured an endless number of corruption scandals. That said, the ANC remains the country's most popular at the ballot with it receiving 57.5% of the vote in the last election. Malema's party, the EFF, carries a far-left populist message that has resonated with many disaffected young black South Africans but simultaneously, it has brought the ire of those who've deemed his messaging as 'anti-white' racism. Lastly, Zille's DA has drawn criticism for primarily serving the interests of privileged white South Africans but moreover, Zille has drawn much backlash against some of the views she holds. All three politicians use Twitter as a tool to spread their political messages.
+
+### Collecting tweets with R
+For this article I used the rtweet package to collect tweets that mentioned any of the three politicians in the first week of March 2022. The package allows you to scrape tweets up to 6 days before (unless you pay for a premium Twitter account). 
+
+After some processing I managed to scrape:
+
+* `r nrow(tweet_list_time[[2]])` tweets that mention Ramaphosa
+* `r nrow(tweet_list_time[[3]])` tweets that mention Malema
+* `r nrow(tweet_list_time[[1]])` tweets that mention Zille
+
+The code chunk below describes the process I used to gather the data:
+
+```{r scrape_code, include=TRUE, eval=FALSE}
+library(tidyverse)
+library(rtweet)
+
+# Function to pre-process text
+clean.text = function(x) {
+  # convert to lower case
+  x = tolower(x)
+  # remove rt
+  x = gsub("rt", "", x)
+  # remove at
+  x = gsub("@\\w+", "", x)
+  # remove punctuation
+  x = gsub("[[:punct:]]", "", x)
+  # remove numbers
+  x = gsub("[[:digit:]]", "", x)
+  # remove links http
+  x = gsub("http\\w+", "", x)
+  # remove tabs
+  x = gsub("[ |\t]{2,}", "", x)
+  # remove blank spaces at the beginning
+  x = gsub("^ ", "", x)
+  # remove blank spaces at the end
+  x = gsub(" $", "", x)
+  # some other cleaning text
+  x = gsub('https://','',x)
+  x = gsub('http://','',x)
+  x = gsub('[^[:graph:]]', ' ',x)
+  x = gsub('[[:punct:]]', '', x)
+  x = gsub('[[:cntrl:]]', '', x)
+  x = gsub('\\d+', '', x)
+  x = str_replace_all(x,"[^[:graph:]]", " ")
+  return(x)
+}
+
+# The names of the politicians
+politicians <- c("Zille", "Ramaphosa", "Malema")
+
+# Scrape the data (takes a while)
+tweet_list <- lapply(politicians, function(x) search_tweets(x,
+  retryonratelimit = TRUE, n=18000
+))
+
+# Clean up the text using a user written cleaning function (clean.text)
+tweet_list_preprocess <- lapply(tweet_list, function(x){
+  df <- x %>%
+    mutate(text = clean.text(text))
+  return(df)
+})
+
+# Name the list elements
+names(tweet_list_preprocess) <- politicians
+
+# Number of tweets per hour (for graphing)
+tweet_list_time <- lapply(tweet_list_preprocess, function(x){
+  df <- x %>%
+    mutate(Created_at_round = round.POSIXt(created_at, units = "hours"))
+  return(df)
+})
+
+# Below to create single dataframe
+tweet_df <- Map(cbind, tweet_list_time, Politician = names(tweet_list_time)) %>% 
+  bind_rows(.) 
+
+```
+
+### Unpacking the data
+
+Between the three politicians there are notable differences in how they come across on Twitter. First, as shown in the graph below, there were substantially more tweets per hour mentioning Malema than the other two politicians. In fact, Zille got very few mentions per hour. On average, Malema received `r tweets_per_hour[3]` mentions per hour, Ramaphosa `r tweets_per_hour[2]` mentions per hour and Zille just `r tweets_per_hour[1]` mentions per hour. 
+
+```{r line_graph, echo=FALSE}
+plot <- ggplot(tweet_df_hour, aes(x=Created_at_round, y=n)) +
+  theme_light() +
+  xlab("Time") + ylab(NULL) +
+  ggtitle("Number of Twitter mentions per hour") +
+  geom_line(aes(x=Created_at_round, y=n, color=Politician)) +
+  scale_color_manual(values=c("#FF0000", "#FFCC00", "#015A9C")) +
+  labs(caption = "Malema's mentions reached the 18 000 tweet limit on 3 March.")
+
+plot
+```
+
+While its now clear that Malema is the most mentioned on Twitter, we haven't yet got an impression of the contents of tweets mentioning the three politicians. As a starting point I've produced a word cloud for each politician. Word clouds provide a visual representation of free-form text data by showing the most commonly mentioned terms. 
+
+Ramaphosa's tweets seemed to most commonly relate to the Ukraine-Russia war, for Malema they most commonly related to his birthday (which was 3 March and also probably explains his large number of mentions), while for Zille tweets often seemed to relate to her controversial opinions on 'PC culture'. 
+```{r wc_data_ramaphosa, include=FALSE}
+
+sentiment_ramaphosa_vector <-  tweet_df[tweet_df$Politician=="Ramaphosa",]$text
+
+text_corpus <- Corpus(VectorSource(sentiment_ramaphosa_vector))
+text_corpus <- tm_map(text_corpus, content_transformer(tolower))
+text_corpus <- tm_map(text_corpus, function(x)removeWords(x,stopwords("english")))
+
+text_corpus_ramaphosa <- tm_map(text_corpus, removeWords, c("cyril", "ramaphosas"))
+
+tdm_ramaphosa <- TermDocumentMatrix(text_corpus_ramaphosa)
+tdm_ramaphosa <- as.matrix(tdm_ramaphosa)
+tdm_ramaphosa <- sort(rowSums(tdm_ramaphosa), decreasing = TRUE)
+tdm_ramaphosa <- data.frame(word = names(tdm_ramaphosa), freq = tdm_ramaphosa)
+set.seed(123)
+```
+```{r wc_data_malema, include=FALSE}
+
+sentiment_malema_vector <-  tweet_df[tweet_df$Politician=="Malema",]$text
+
+text_corpus <- Corpus(VectorSource(sentiment_malema_vector))
+text_corpus <- tm_map(text_corpus, content_transformer(tolower))
+text_corpus <- tm_map(text_corpus, function(x)removeWords(x,stopwords("english")))
+
+text_corpus_malema <- tm_map(text_corpus, removeWords, c("julius"))
+
+tdm_malema <- TermDocumentMatrix(text_corpus_malema)
+tdm_malema <- as.matrix(tdm_malema)
+tdm_malema <- sort(rowSums(tdm_malema), decreasing = TRUE)
+tdm_malema <- data.frame(word = names(tdm_malema), freq = tdm_malema)
+set.seed(123)
+```
+```{r wc_data_zille, include=FALSE}
+
+sentiment_zille_vector <-  tweet_df[tweet_df$Politician=="Zille",]$text
+
+text_corpus <- Corpus(VectorSource(sentiment_zille_vector))
+text_corpus <- tm_map(text_corpus, content_transformer(tolower))
+text_corpus <- tm_map(text_corpus, function(x)removeWords(x,stopwords("english")))
+
+text_corpus_zille <- tm_map(text_corpus, removeWords, c("helen"))
+
+tdm_zille <- TermDocumentMatrix(text_corpus_zille)
+tdm_zille <- as.matrix(tdm_zille)
+tdm_zille <- sort(rowSums(tdm_zille), decreasing = TRUE)
+tdm_zille <- data.frame(word = names(tdm_zille), freq = tdm_zille)
+set.seed(123)
+```
+```{r wc_graph, echo=FALSE}
+par(mfrow=c(1,3), mar = rep(0, 4))
+wordcloud(text_corpus_ramaphosa, min.freq = 5, max.words = 30, scale = c(2.2,1),
+            colors=brewer.pal(8, "Dark2"), random.color = T, random.order = F)
+wordcloud(text_corpus_malema, min.freq = 5, max.words = 30, scale = c(2.2,1),
+            colors=brewer.pal(8, "Dark2"), random.color = T, random.order = F)
+wordcloud(text_corpus_zille, min.freq = 5, max.words = 30, scale = c(2.2,1),
+            colors=brewer.pal(8, "Dark2"), random.color = T, random.order = F)
+```
+
+### Tweet sentiment
+As a final step I use the syuzhet package to generate sentiment scores from the tweets. The syuzhet package offers a few different algorithms, each taking a different approach to sentiment scoring. These include _afinn_, _bing_, _nrc_, and the default _syuzhet_. More information on the syuzhet package can be found on its creator's [github](https://github.com/mjockers/syuzhet).
+
+Tweets with a positive score have positive sentiment, a negative score a negative sentiment, and a 0 score a neutral sentiment. It also does emotion scoring based upon the nrc algorithm. The code chunk below shows how the sentiment scores are generated.
+
+``` {r syuzhet_df, echo=FALSE,  include=TRUE}
+library(syuzhet)
+syuzhet_sentiment <- data.frame("Politician"=tweet_df[,"Politician"],"score"=get_sentiment(tweet_df[,5], method="syuzhet"))
+
+```
+
+The box-and-whisker plots below provide a representation of the syuzhet sentiment distribution of tweets mentioning the politicians. Malema's plot shows that most tweets mentioning him had a positive sentiment with 75% scoring above 0. For Ramaphosa, sentiment was more mixed with the interquartile ranging between negative and positive sentiment scores. Sentiment towards Zille was the most negative with 75% of scores either neutral or negative. 
+
+``` {r sentiment_box_and_whisker, echo=FALSE}
+p <- ggplot(syuzhet_sentiment, aes(Politician, score)) + geom_boxplot()  + theme_light() + 
+    xlab("") + ylab("Sentiment score") +
+  ggtitle("Sentiment score box-and-whisker plots") +
+  theme(axis.text.x =element_text(size=12),
+        axis.title=element_text(size=12))
+p
+
+```
+
+Expectedly, Malema had the highest average sentiment score (`r round(mean((syuzhet_sentiment[syuzhet_sentiment$Politician=="Malema",])$score),2)`), followed by Ramaphosa (`r round(mean((syuzhet_sentiment[syuzhet_sentiment$Politician=="Ramaphosa",])$score),2)`), and then lastly Zille (`r round(mean((syuzhet_sentiment[syuzhet_sentiment$Politician=="Zille",])$score),2)`).
+
+The syuzhet package can also perform emotion analysis using the [NRC Emotion lexicon](http://saifmohammad.com/WebPages/lexicons.html). The graph below shows emotion analysis results on tweets that mentioned the three politicians. 
+
+``` {r sentiment_emotion_graph, echo=FALSE}
+# Get the emotions using the NRC Emotion lexicon
+emotion_list <- lapply(seq_along(politicians), function(i){
+    tweets_vector <- tweet_df[tweet_df$Politician==politicians[i],5]
+    
+    emotion_df <- get_nrc_sentiment(tweets_vector) %>% 
+    gather(emotion, value, "anger":"positive") %>% 
+    group_by(emotion) %>% 
+    dplyr::summarise(value = sum(value)) %>% 
+    ungroup() %>% 
+    mutate(total_tweets = sum(value)) %>% 
+    mutate(emotion_proportion = round((value/total_tweets)*100)) %>% 
+    mutate(Politician = politicians[i]) 
+
+})
+emotion_politician <- bind_rows(emotion_list)
+
+# Create the grouped bar graph (horizontal)
+emotion_plot <- ggplot(emotion_politician, aes(fill=Politician, x=emotion, y=emotion_proportion)) +
+  geom_bar(position="dodge", stat="identity") + coord_flip() +
+  theme_light() +  xlab("% of tweets") + xlab("") +
+  scale_fill_manual(values=c("#FF0000", "#FFCC00", "#015A9C")) +
+  ggtitle("Emotion analysis using the NRC Emotion lexicon")
+  
+    
+
+emotion_plot
+```
+
+For added context, the table below provides an example of a tweet within each emotion category for each politician:
+
+
+
+
